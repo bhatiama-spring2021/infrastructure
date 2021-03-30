@@ -658,7 +658,7 @@ resource "aws_autoscaling_group" "autoscaling_group" {
   max_size             = 5
   default_cooldown     = 60
   desired_capacity     = 3
-  vpc_zone_identifier = [aws_subnet.subnet[0].id]
+  vpc_zone_identifier = aws_subnet.subnet.*.id
   target_group_arns = [aws_lb_target_group.lb_targetGroup.arn]
   tag {
     key                 = "Name"
