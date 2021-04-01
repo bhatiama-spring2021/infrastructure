@@ -435,7 +435,7 @@ resource "aws_iam_role_policy" "codeDeploy_ec2_s3" {
       ],
       "Effect": "Allow",
       "Resource": [
-        "arn:aws:s3:::codedeploy.${var.aws_profile_name}.${var.domain_name}/*",
+        "arn:aws:s3:::codedeploy.${var.aws_profile_name}.${var.domain_name}",
         "arn:aws:s3:::codedeploy.${var.aws_profile_name}.${var.domain_name}/*"
       ]
     }
@@ -556,6 +556,12 @@ resource "aws_codedeploy_deployment_group" "code_deploy_deployment_group" {
   deployment_config_name = "CodeDeployDefault.OneAtATime"
   service_role_arn       = aws_iam_role.code_deploy_role.arn
   autoscaling_groups     = [aws_autoscaling_group.autoscaling_group.name]
+  
+  load_balancer_info {
+    target_group_info {
+      name = aws_lb_target_group.lb_targetGroup.name
+    }
+  }
 
   ec2_tag_filter {
     key   = "Name"
@@ -705,7 +711,7 @@ resource "aws_autoscaling_policy" "WebServerScaleDownPolicy" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "CPUAlarmLow" {
-  alarm_description = "Scale-down if CPU < 70% for 10 minutes"
+  alarm_description = "Scale-down if CPU < 3% for 10 minutes"
   metric_name         = "CPUUtilization"
   namespace           = "AWS/EC2"
   statistic           = "Average"
@@ -721,7 +727,7 @@ resource "aws_cloudwatch_metric_alarm" "CPUAlarmLow" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "CPUAlarmHigh" {
-  alarm_description = "Scale-up if CPU > 90% for 10 minutes"
+  alarm_description = "Scale-up if CPU > 5% for 10 minutes"
   metric_name         = "CPUUtilization"
   namespace           = "AWS/EC2"
   statistic           = "Average"
