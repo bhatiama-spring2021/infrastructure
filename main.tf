@@ -136,6 +136,18 @@ variable "alarm_high_threshold"{
 
 }
 
+variable "dynamo_dbname" {
+  type = string
+}
+
+variable "dynamo_read_capacity" {
+  type = number
+}
+
+variable "dynamo_write_capacity" {
+  type = number
+}
+
 # VPC
 resource "aws_vpc" "vpc" {
   cidr_block                       = var.cidr_block
@@ -482,7 +494,8 @@ resource "aws_iam_policy" "gh_code_deploy_policy" {
         "codedeploy:GetApplicationRevision"
       ],
       "Resource": [
-        "arn:aws:codedeploy:${var.region}:${local.aws_user_account_id}:application:${aws_codedeploy_app.code_deploy_app.name}"
+        "arn:aws:codedeploy:${var.region}:${local.aws_user_account_id}:application:${aws_codedeploy_app.code_deploy_app.name}",
+        "arn:aws:codedeploy:${var.region}:${local.aws_user_account_id}:application:${aws_codedeploy_app.lambda_code_deploy_app.name}"
       ]
 
     },
@@ -493,7 +506,8 @@ resource "aws_iam_policy" "gh_code_deploy_policy" {
         "codedeploy:GetDeployment"
       ],
       "Resource": [
-         "arn:aws:codedeploy:${var.region}:${local.aws_user_account_id}:deploymentgroup:${aws_codedeploy_app.code_deploy_app.name}/${aws_codedeploy_deployment_group.code_deploy_deployment_group.deployment_group_name}"
+         "arn:aws:codedeploy:${var.region}:${local.aws_user_account_id}:deploymentgroup:${aws_codedeploy_app.code_deploy_app.name}/${aws_codedeploy_deployment_group.code_deploy_deployment_group.deployment_group_name}",
+         "arn:aws:codedeploy:${var.region}:${local.aws_user_account_id}:deploymentgroup:${aws_codedeploy_app.lambda_code_deploy_app.name}/${aws_codedeploy_deployment_group.lambda_code_deploy_deployment_group.deployment_group_name}"
       ]
     },
     {
@@ -504,7 +518,8 @@ resource "aws_iam_policy" "gh_code_deploy_policy" {
       "Resource": [
         "arn:aws:codedeploy:${var.region}:${local.aws_user_account_id}:deploymentconfig:CodeDeployDefault.OneAtATime",
         "arn:aws:codedeploy:${var.region}:${local.aws_user_account_id}:deploymentconfig:CodeDeployDefault.HalfAtATime",
-        "arn:aws:codedeploy:${var.region}:${local.aws_user_account_id}:deploymentconfig:CodeDeployDefault.AllAtOnce"
+        "arn:aws:codedeploy:${var.region}:${local.aws_user_account_id}:deploymentconfig:CodeDeployDefault.AllAtOnce",
+        "arn:aws:codedeploy:${var.region}:${local.aws_user_account_id}:deploymentconfig:CodeDeployDefault.LambdaAllAtOnce"
       ]
     }
   ]
@@ -570,7 +585,7 @@ resource "aws_codedeploy_deployment_group" "code_deploy_deployment_group" {
   }
 
   deployment_style {
-    deployment_option = "WITH_TRAFFIC_CONTROL"
+    deployment_option = "WITHOUT_TRAFFIC_CONTROL"
     deployment_type   = "IN_PLACE"
   }
 
@@ -645,6 +660,10 @@ resource "aws_launch_configuration" "as_config" {
               sudo echo export "RDS_DB_NAME=${aws_db_instance.rds_instance.name}" >> /etc/environment
               sudo echo export "RDS_USERNAME=${aws_db_instance.rds_instance.username}" >> /etc/environment
               sudo echo export "RDS_PASSWORD=${aws_db_instance.rds_instance.password}" >> /etc/environment
+              sudo echo export "PROFILE_AWS=${var.aws_profile_name}">> /etc/environment
+              sudo echo export "NAME_DOMAIN=${var.dns}" >> /etc/environment
+              sudo echo export "SNS_TOPIC_ARN=${aws_sns_topic.sns_email.arn}" >> /etc/environment
+              sudo echo export "DYNAMO_DB_TABLE=${var.dynamo_dbname}" >> /etc/environment
                
                EOF
 
@@ -793,4 +812,321 @@ resource "aws_lb_listener" "webapp-Listener" {
     type             = "forward"
     target_group_arn = aws_lb_target_group.lb_targetGroup.arn
   }
+}
+
+# Dynamo DB resource 
+resource "aws_dynamodb_table" "dynamodb-table" {
+
+  name           = var.dynamo_dbname
+  read_capacity  = var.dynamo_read_capacity
+  write_capacity = var.dynamo_write_capacity
+  hash_key       = "id"
+
+  attribute {
+    name = "id"
+    type = "S"
+  }
+  tags = {
+    Name = var.dynamo_dbname
+  }
+}
+
+# Lambda policy
+resource "aws_iam_policy" "ghactions-lambda-policy" {
+  name   = "ghAction_s3_policy_lambda"
+  policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "lambda:*"
+        ],
+        
+      "Resource": "arn:aws:lambda:${var.region}:${local.aws_user_account_id}:function:${aws_lambda_function.sns_lambda_email.function_name}"
+    }
+  ]
+}
+EOF
+}
+
+# Attach lambda policy to ghaction user
+resource "aws_iam_user_policy_attachment" "ghactions_aws_lambda_policy_attach" {
+  user       = "ghaction"
+  policy_arn = aws_iam_policy.ghactions-lambda-policy.arn
+}
+
+# SNS topic and policies
+resource "aws_sns_topic" "sns_email" {
+  name = "email_request"
+}
+
+# Generates an IAM policy document in JSON format
+data "aws_iam_policy_document" "sns_topic_policy" {
+  policy_id = "__default_policy_ID"
+
+  statement {
+    actions = [
+      "SNS:Subscribe",
+      "SNS:SetTopicAttributes",
+      "SNS:RemovePermission",
+      "SNS:Receive",
+      "SNS:Publish",
+      "SNS:ListSubscriptionsByTopic",
+      "SNS:GetTopicAttributes",
+      "SNS:DeleteTopic",
+      "SNS:AddPermission",
+    ]
+
+    condition {
+      test     = "StringEquals"
+      variable = "AWS:SourceOwner"
+
+      values = [
+        local.aws_user_account_id,
+      ]
+    }
+
+    effect = "Allow"
+
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+
+    resources = [
+      aws_sns_topic.sns_email.arn,
+    ]
+
+    sid = "__default_statement_ID"
+  }
+}
+
+resource "aws_sns_topic_policy" "sns_email_policy" {
+  arn    = aws_sns_topic.sns_email.arn
+  policy = data.aws_iam_policy_document.sns_topic_policy.json
+}
+
+# IAM policy for SNS
+resource "aws_iam_policy" "sns_iam_policy" {
+  name   = "sns_iam_policy"
+  policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "SNS:Publish"
+      ],
+      "Resource": "${aws_sns_topic.sns_email.arn}"
+    }
+  ]
+}
+EOF
+}
+
+# Attach the SNS topic policy to the EC2 role
+resource "aws_iam_role_policy_attachment" "ec2_instance_sns" {
+  policy_arn = aws_iam_policy.sns_iam_policy.arn
+  role       = aws_iam_role.ec2_iam_role.name
+}
+
+# archives index.js to zip file
+data "archive_file" "lambda_zip" {
+  type        = "zip"
+  source_file = "index.js"
+  output_path = "lambda_function.zip"
+}
+
+# upload lambda_fucntion.zip file to s3 bucket
+resource "aws_s3_bucket_object" "object" {
+  bucket = "codedeploy.${var.aws_profile_name}.${var.domain_name}"
+  key    = "lambda_function.zip"
+  source = "./lambda_function.zip"
+  depends_on = [data.archive_file.lambda_zip]
+}
+
+#Lambda Policy
+resource "aws_iam_policy" "aws_lambda_policy" {
+  name        = "aws_lambda_policy"
+  description = "Lambda Policy for dynamo ses and cloudwatch logs"
+  policy      = <<EOF
+{
+   "Version": "2012-10-17",
+   "Statement": [
+       {
+           "Effect": "Allow",
+           "Action": [
+               "logs:CreateLogGroup",
+               "logs:CreateLogStream",
+               "logs:PutLogEvents"
+           ],
+           "Resource": "*"
+       },
+       {
+         "Sid": "LambdaDynamoDBAccess",
+         "Effect": "Allow",
+         "Action": [
+             "dynamodb:GetItem",
+             "dynamodb:PutItem",
+             "dynamodb:UpdateItem",
+             "dynamodb:Scan"
+         ],
+         "Resource": "arn:aws:dynamodb:${var.region}:${local.aws_user_account_id}:table/csye6225"
+       },
+       {
+         "Sid": "LambdaSESAccess",
+         "Effect": "Allow",
+         "Action": [
+             "ses:VerifyEmailAddress",
+             "ses:SendEmail",
+             "ses:SendRawEmail"
+         ],
+         "Resource": "*"
+       }
+   ]
+}
+ EOF
+}
+
+#IAM role for lambda sns
+resource "aws_iam_role" "iam_for_lambda" {
+  name = "iam_for_lambda"
+
+  assume_role_policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Action": "sts:AssumeRole",
+      "Principal": {
+        "Service": "lambda.amazonaws.com"
+      },
+      "Effect": "Allow",
+      "Sid": ""
+    }
+  ]
+}
+EOF
+}
+
+#attach lambda policy with lambda role
+resource "aws_iam_role_policy_attachment" "attach_lambda_policy_to_lambda_role" {
+  role       = aws_iam_role.iam_for_lambda.name
+  policy_arn = aws_iam_policy.aws_lambda_policy.arn
+}
+
+#Lambda Function
+resource "aws_lambda_function" "sns_lambda_email" {
+  s3_bucket = "codedeploy.${var.aws_profile_name}.${var.domain_name}"
+  s3_key    = "lambda_function.zip"
+  function_name    = "lambda_function_name"
+  role             = aws_iam_role.iam_for_lambda.arn
+  handler          = "index.handler"
+  runtime          = "nodejs12.x"
+  publish          = true
+  environment {
+    variables = {
+      tableName = var.dynamo_dbname
+    }
+  }
+   depends_on = [aws_s3_bucket_object.object]
+}
+
+#SNS topic subscription to Lambda
+resource "aws_sns_topic_subscription" "lambda" {
+  topic_arn = aws_sns_topic.sns_email.arn
+  protocol  = "lambda"
+  endpoint  = aws_lambda_function.sns_lambda_email.arn
+}
+
+#SNS Lambda permission
+resource "aws_lambda_permission" "lambda_sns" {
+  statement_id  = "AllowExecutionFromSNS"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.sns_lambda_email.function_name
+  principal     = "sns.amazonaws.com"
+  source_arn    = aws_sns_topic.sns_email.arn
+}
+
+# Create IAM role for lambda codedeploy
+resource "aws_iam_role" "lambda_code_deploy_role" {
+  name = "LambdaCodeDeployServiceRole"
+
+  assume_role_policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "",
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "codedeploy.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+EOF
+}
+
+# Lambda Codedeploy app
+resource "aws_codedeploy_app" "lambda_code_deploy_app" {
+  compute_platform = "Lambda"
+  name             = "csye6225-lambda"
+}
+
+# Codedeply group for Lambda
+resource "aws_codedeploy_deployment_group" "lambda_code_deploy_deployment_group" {
+  app_name               = aws_codedeploy_app.lambda_code_deploy_app.name
+  deployment_group_name  = "csye6225-lambda-deployment"
+  deployment_config_name = "CodeDeployDefault.LambdaAllAtOnce"
+  service_role_arn       = aws_iam_role.lambda_code_deploy_role.arn
+
+  deployment_style {
+    deployment_option = "WITH_TRAFFIC_CONTROL"
+    deployment_type   = "BLUE_GREEN"
+  }
+  
+  depends_on = [aws_codedeploy_app.lambda_code_deploy_app]
+}
+
+# Attach policy to Lambda CodeDeploy role
+resource "aws_iam_role_policy_attachment" "AWSLambdaCodeDeployRole" {
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSCodeDeployRoleForLambda"
+  role       = aws_iam_role.lambda_code_deploy_role.name
+}
+
+# Create policy for Lambda Codedeploy to access s3 bucket
+resource "aws_iam_role_policy" "lambda_codeDeploy_s3" {
+  name = "Lambda_CodeDeploy_S3"
+  role = aws_iam_role.lambda_code_deploy_role.id
+
+  policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Action": [
+        "s3:Get*",
+        "s3:List*"
+      ],
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:s3:::codedeploy.${var.aws_profile_name}.${var.domain_name}",
+        "arn:aws:s3:::codedeploy.${var.aws_profile_name}.${var.domain_name}/*"
+      ]
+    }
+  ]
+}
+EOF
+}
+
+# Create alias for Lambda
+resource "aws_lambda_alias" "lambda_alias" {
+  name             = "lamda_deployment"
+  function_name    = aws_lambda_function.sns_lambda_email.arn
+  function_version = aws_lambda_function.sns_lambda_email.version
 }
