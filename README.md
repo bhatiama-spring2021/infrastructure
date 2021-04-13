@@ -80,3 +80,18 @@ To run the main.tf file, create a .tfvars file with the following variables:
     gateway_name = "name_for_internet_gateway"
     route_table_name = "name_for_route_table"
     route_table_cidr_block = "0.0.0.0/0"
+
+## Import certificates into aws certificate manager
+
+* Click [here](https://docs.aws.amazon.com/acm/latest/userguide/import-certificate-prerequisites.html) to view the prerequisites for importing a certificate
+
+* Click [here](https://docs.aws.amazon.com/acm/latest/userguide/import-certificate-format.html) to view the certificate format
+
+* Click [here](https://docs.aws.amazon.com/acm/latest/userguide/import-certificate-api-cli.html) to view the different ways to import certificate into aws certificate manager
+
+
+* Command to import the certificate from CLI
+
+        - $ aws acm import-certificate --certificate fileb://Certificate.pem \
+            --certificate-chain fileb://CertificateChain.pem \
+            --private-key fileb://PrivateKey.pem 
