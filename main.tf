@@ -148,6 +148,11 @@ variable "dynamo_write_capacity" {
   type = number
 }
 
+data "aws_acm_certificate" "aws_ssl_certificate" {
+  domain   = "${var.aws_profile_name}.${var.dns}"
+  statuses = ["ISSUED"]
+}
+
 # VPC
 resource "aws_vpc" "vpc" {
   cidr_block                       = var.cidr_block
@@ -318,12 +323,25 @@ resource "aws_db_subnet_group" "db_subnet" {
   subnet_ids = aws_subnet.subnet.*.id
 }
 
+resource "aws_db_parameter_group" "default" {
+  name   = "rds-mysql"
+  family = "mysql8.0"
+
+  parameter {
+    name  = "performance_schema"
+    value = true
+    apply_method = "pending-reboot"
+  }
+
+
+}
+
 # RDS Instance
 resource "aws_db_instance" "rds_instance" {
   allocated_storage      = "20"
   storage_type           = "gp2"
   engine                 = "mysql"
-  engine_version         = "5.7.22"
+  engine_version         = "8.0.17"
   instance_class         = "db.t3.micro"
   identifier             = var.db_identifier
   name                   = var.db_name
@@ -333,6 +351,10 @@ resource "aws_db_instance" "rds_instance" {
   db_subnet_group_name   = aws_db_subnet_group.db_subnet.name
   vpc_security_group_ids = [aws_security_group.database_security_group.id]
   storage_encrypted      = true
+  kms_key_id             = aws_kms_key.rds_key.arn
+  parameter_group_name   = aws_db_parameter_group.default.name
+
+  depends_on = [aws_db_parameter_group.default]
 }
 
 # IAM Role for EC2 Instace
@@ -671,6 +693,7 @@ resource "aws_launch_configuration" "as_config" {
     volume_type           = "gp2"
     volume_size           = 20
     delete_on_termination = true
+    encrypted             = true
   }
   depends_on = [aws_s3_bucket.s3_bucket, aws_db_instance.rds_instance]
 }
@@ -771,12 +794,12 @@ resource "aws_security_group" "loadBalancer_sg" {
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
-    ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+  # ingress {
+  #   from_port   = 80
+  #   to_port     = 80
+  #   protocol    = "tcp"
+  #   cidr_blocks = ["0.0.0.0/0"]
+  # }
   egress {
     from_port   = 0
     to_port     = 0
@@ -806,8 +829,10 @@ resource "aws_lb" "application_Load_Balancer" {
 
 resource "aws_lb_listener" "webapp-Listener" {
   load_balancer_arn = aws_lb.application_Load_Balancer.arn
-  port              = "80"
-  protocol          = "HTTP"
+  port              = "443"
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-2016-08"
+  certificate_arn   = data.aws_acm_certificate.aws_ssl_certificate.arn
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.lb_targetGroup.arn
@@ -1129,4 +1154,75 @@ resource "aws_lambda_alias" "lambda_alias" {
   name             = "lamda_deployment"
   function_name    = aws_lambda_function.sns_lambda_email.arn
   function_version = aws_lambda_function.sns_lambda_email.version
+}
+
+resource "aws_kms_key" "ebs_key" {
+  description             = "KMS key for encryting EBS volume"
+  deletion_window_in_days = 7
+  enable_key_rotation     = true
+  policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+            "Sid": "Enable IAM User Permissions",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "arn:aws:iam::${local.aws_user_account_id}:root"
+            },
+            "Action": "kms:*",
+            "Resource": "*"
+    },
+    {
+      "Sid": "Allow service-linked role use of the CMK",
+      "Effect": "Allow",
+      "Principal": {
+          "AWS": [
+              "arn:aws:iam::${local.aws_user_account_id}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+          ]
+      },
+      "Action": [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "Allow attachment of persistent resources",
+      "Effect": "Allow",
+      "Principal": {
+          "AWS": [
+              "arn:aws:iam::${local.aws_user_account_id}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+          ]
+      },
+      "Action": [
+          "kms:CreateGrant"
+      ],
+      "Resource": "*",
+      "Condition": {
+          "Bool": {
+              "kms:GrantIsForAWSResource": true
+          }
+        }
+    }
+  ]
+}
+EOF
+}
+
+resource "aws_ebs_encryption_by_default" "default_ebs_encryption" {
+  enabled = true
+}
+
+resource "aws_ebs_default_kms_key" "default_ebs_kms_key" {
+  key_arn = aws_kms_key.ebs_key.arn
+}
+
+resource "aws_kms_key" "rds_key" {
+  description             = "KMS key for encrypting RDS instance"
+  deletion_window_in_days = 7
+  enable_key_rotation     = true
 }
