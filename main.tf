@@ -1213,10 +1213,6 @@ resource "aws_kms_key" "ebs_key" {
 EOF
 }
 
-resource "aws_ebs_encryption_by_default" "default_ebs_encryption" {
-  enabled = true
-}
-
 resource "aws_ebs_default_kms_key" "default_ebs_kms_key" {
   key_arn = aws_kms_key.ebs_key.arn
 }
@@ -1225,4 +1221,14 @@ resource "aws_kms_key" "rds_key" {
   description             = "KMS key for encrypting RDS instance"
   deletion_window_in_days = 7
   enable_key_rotation     = true
+}
+
+resource "aws_kms_alias" "alias_ebs" {
+  name          = "alias/ebs_key"
+  target_key_id = aws_kms_key.ebs_key.key_id
+}
+
+resource "aws_kms_alias" "alias_rds" {
+  name          = "alias/rds_key"
+  target_key_id = aws_kms_key.rds_key.key_id
 }
